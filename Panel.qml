@@ -62,6 +62,7 @@ Item {
   property string effort: "default"
   readonly property string configPath: Quickshell.env("HOME") + "/.config/recast/config.json"
 
+  property bool settingsOpen: false
   // picker dropdown state
   property string pickerKind: ""   // "" | "model" | "effort"
   property int pickerIndex: 0
@@ -293,6 +294,8 @@ Item {
   function setModel(id) { root.model = id; saveConfig() }
   function setEffort(id) { root.effort = id; saveConfig() }
   function saveConfig() { cfgFile.setText(JSON.stringify({ model: root.model, effort: root.effort }, null, 2) + "\n") }
+  function openSettings() { root.settingsOpen = true; Qt.callLater(function () { keyField.forceActiveFocus() }) }
+  function closeSettings() { root.settingsOpen = false; keyField.text = ""; Qt.callLater(function () { input.forceActiveFocus() }) }
 
   FileView {
     id: cfgFile
@@ -311,8 +314,18 @@ Item {
 
   Process {
     id: keyProc
-    command: ["secret-tool", "lookup", "service", "openrouter", "app", "ai-transform"]
+    // prefer the recast-namespaced keyring entry; fall back to the legacy ai-transform one
+    command: ["bash", "-c",
+      "secret-tool lookup service openrouter app recast 2>/dev/null || secret-tool lookup service openrouter app ai-transform 2>/dev/null"]
     stdout: SplitParser { onRead: function (data) { if (!root.apiKey) root.apiKey = data.replace(/^\s+|\s+$/g, "") } }
+  }
+  Process { id: keyStoreProc }
+  function storeKey(k) {
+    root.apiKey = k
+    keyStoreProc.command = ["bash", "-c",
+      "printf %s \"$1\" | secret-tool store --label='Recast (OpenRouter)' service openrouter app recast",
+      "--", k]
+    keyStoreProc.running = true
   }
   Process {
     id: streamProc
@@ -348,7 +361,7 @@ Item {
     Rectangle {
       id: card
       width: 560
-      height: Math.min(content.implicitHeight, root.maxHeight)
+      height: Math.min(root.settingsOpen ? settingsView.implicitHeight : content.implicitHeight, root.maxHeight)
       anchors.horizontalCenter: parent.horizontalCenter
       y: Math.max(Style.gapsOut, Math.round((panel.height - height) / 2))
       color: Color.menu.background
@@ -357,6 +370,62 @@ Item {
       radius: Style.cornerRadius
 
       MouseArea { anchors.fill: parent }   // swallow clicks so the scrim close doesn't fire
+
+      // settings overlay (Ctrl+,) — enter the OpenRouter API key
+      Rectangle {
+        id: settingsView
+        visible: root.settingsOpen
+        z: 20
+        anchors.top: parent.top; anchors.left: parent.left
+        width: parent.width
+        implicitHeight: setCol.implicitHeight
+        height: implicitHeight
+        color: Color.menu.background
+        Column {
+          id: setCol
+          width: parent.width
+          Item {
+            width: parent.width; height: 40
+            Row {
+              anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 20; spacing: 12
+              Text { text: "Recast"; color: Color.menu.text; font.bold: true; font.family: Style.font.family; font.pixelSize: Style.font.title }
+              Text { text: "Settings"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.title }
+            }
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
+          }
+          Item {
+            width: parent.width
+            height: keyCol.implicitHeight + 36
+            Column {
+              id: keyCol
+              x: 20; y: 18; width: parent.width - 40; spacing: 8
+              Text { text: "OpenRouter API key"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+              Rectangle {
+                width: parent.width; height: 34; color: "transparent"
+                border.color: keyField.activeFocus ? Color.menu.selectedText : Util.alpha(Color.menu.border, 0.5)
+                border.width: 1
+                TextInput {
+                  id: keyField
+                  anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
+                  verticalAlignment: TextInput.AlignVCenter
+                  echoMode: TextInput.Password
+                  color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body; clip: true
+                  Text { anchors.verticalCenter: parent.verticalCenter; visible: keyField.text.length === 0; text: "sk-or-…"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.body }
+                  Keys.onReturnPressed: { if (keyField.text.length > 0) root.storeKey(keyField.text); root.closeSettings() }
+                  Keys.onEnterPressed: { if (keyField.text.length > 0) root.storeKey(keyField.text); root.closeSettings() }
+                  Keys.onEscapePressed: root.closeSettings()
+                }
+              }
+              Text {
+                width: parent.width
+                text: (root.apiKey !== "" ? "A key is set. " : "") +
+                      "Stored in the system keyring, never written to disk. Enter to save · Esc to close."
+                color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
+              }
+            }
+          }
+        }
+      }
 
       // model / effort dropdown, floating over the content (top-right, under the bar)
       Rectangle {
@@ -534,6 +603,7 @@ Item {
                 if (event.modifiers & Qt.ControlModifier) {
                   if (event.key === Qt.Key_M) { root.togglePicker("model"); event.accepted = true; return }
                   if (event.key === Qt.Key_E && root.modelReasoning(root.model)) { root.togglePicker("effort"); event.accepted = true; return }
+                  if (event.key === Qt.Key_Comma) { root.openSettings(); event.accepted = true; return }
                 }
                 if (root.pickerKind !== "") {   // picker open: arrows/enter/esc drive it, swallow the rest
                   if (event.key === Qt.Key_Up) root.pickerMove(-1)
