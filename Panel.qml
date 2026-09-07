@@ -312,6 +312,11 @@ Item {
   // ---- actions ------------------------------------------------------------------------
   function copyText(t) { copyProc.command = ["wl-copy", "--", t]; copyProc.running = true }
   function openLink(url) { linkProc.command = ["xdg-open", String(url)]; linkProc.running = true }
+  // When rendering as Markdown, escape HTML specials so tokens like <repo> or a<b aren't
+  // parsed as HTML tags by Qt's rich-text engine (which silently swallows the rest of the text).
+  function mdSafe(s, md) {
+    return md ? String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : String(s)
+  }
   function copyLast() { if (root.lastAnswer !== "") { copyText(root.lastAnswer); root.copiedHint = "copied ✓" } }
   function regenerate() {
     if (root.busy || root.lastAnswer === "") return
@@ -1007,7 +1012,7 @@ Item {
                 Text {
                   visible: modelData.role === "assistant"
                   width: turn.width
-                  text: modelData.text
+                  text: root.mdSafe(modelData.text, !modelData.isError && root.renderMarkdown)
                   color: modelData.isError ? Color.urgent : Color.menu.text
                   font.family: Style.font.family; font.pixelSize: Style.font.body
                   wrapMode: Text.WordWrap
@@ -1032,7 +1037,7 @@ Item {
               Text { text: root.modelLabel(root.model); color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
               Text {
                 width: parent.width
-                text: root.streaming ? root.answer : root.spinnerFrames.charAt(root.spinIndex)
+                text: root.streaming ? root.mdSafe(root.answer, root.renderMarkdown) : root.spinnerFrames.charAt(root.spinIndex)
                 color: root.streaming ? Color.menu.text : Color.accent   // themed spinner glyph
                 font.family: Style.font.family; font.pixelSize: Style.font.body
                 wrapMode: Text.WordWrap
