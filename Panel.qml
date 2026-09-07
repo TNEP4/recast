@@ -68,15 +68,32 @@ Item {
     return map[id] || id
   }
   function isTerminal(cls) { return root.terminalClasses.indexOf(cls) !== -1 }
+  function appName(cls) {
+    if (!cls) return ""
+    var map = {
+      "org.omarchy.terminal": "Terminal", "Alacritty": "Alacritty", "kitty": "Kitty",
+      "foot": "Foot", "com.mitchellh.ghostty": "Ghostty", "firefox": "Firefox",
+      "chromium": "Chromium", "google-chrome": "Chrome", "code": "VS Code", "Code": "VS Code",
+      "cursor": "Cursor", "obsidian": "Obsidian", "Slack": "Slack", "discord": "Discord",
+      "org.gnome.Nautilus": "Files", "org.telegram.desktop": "Telegram"
+    }
+    if (map[cls]) return map[cls]
+    if (cls.indexOf("chrome-") === 0) {                 // Omarchy web apps: chrome-<host>__…
+      var host = cls.substring(7).split("__")[0].split("-Default")[0].replace(/^www\./, "").split(".")[0]
+      return host.charAt(0).toUpperCase() + host.slice(1)
+    }
+    var n = cls.split(".").pop().replace(/-/g, " ")
+    return n.charAt(0).toUpperCase() + n.slice(1)
+  }
 
   // ---- lifecycle hooks the host calls -------------------------------------------------
   function open(payloadJson) {
     var p = ({})
     try { p = JSON.parse(payloadJson || "{}") } catch (e) { p = ({}) }
     root.selection = p.selection || ""
-    root.sourceApp = p.app || ""
-    root.sourceAddr = p.addr || ""
     root.sourceClass = p.class || ""
+    root.sourceAddr = p.addr || ""
+    root.sourceApp = p.app || root.appName(root.sourceClass)
     root.mode = (p.mode === "chat" || !root.selection) ? "chat" : "transform"
     root.messages = []
     root.history = []

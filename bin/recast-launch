@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Recast launcher — bound to a Hyprland key. Grabs the current primary selection and the
+# active window, then summons (toggles) the Recast panel plugin over shell IPC with a JSON
+# payload. `--chat` opens empty for a direct chat (no selection).
+#
+# Bind in ~/.config/hypr/bindings.lua, e.g.:
+#   o.bind("SUPER + I", "Recast selection",
+#     { launch = os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.tnep4.recast/bin/recast-launch" })
+#   o.bind("SUPER + SHIFT + I", "Recast chat",
+#     { launch = os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.tnep4.recast/bin/recast-launch --chat" })
+set -euo pipefail
+
+ID="io.github.tnep4.recast"
+
+mode="transform"
+sel=""
+if [[ "${1:-}" == "--chat" ]]; then
+  mode="chat"
+else
+  sel="$(wl-paste -p -n 2>/dev/null || true)"
+fi
+
+win="$(hyprctl activewindow -j 2>/dev/null || echo '{}')"
+cls="$(printf '%s' "$win" | jq -r '.class // ""')"
+addr="$(printf '%s' "$win" | jq -r '.address // ""')"
+
+# Never treat Recast's own surface as the source window.
+case "$cls" in recast|org.local.*) cls=""; addr="" ;; esac
+
+payload="$(jq -cn --arg sel "$sel" --arg cls "$cls" --arg addr "$addr" --arg mode "$mode" \
+  '{selection:$sel, class:$cls, addr:$addr, mode:$mode}')"
+
+exec omarchy-shell shell toggle "$ID" "$payload"
