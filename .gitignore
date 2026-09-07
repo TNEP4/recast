@@ -1,0 +1,17 @@
+# Never commit secrets or per-user runtime state.
+# The OpenRouter API key lives ONLY in the system keyring (Secret Service) or the
+# OPENROUTER_API_KEY env var — never in this repo.
+config.json
+*.local.json
+.env
+*.key
+secrets/
+# Python / build noise
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+# Editor / OS
+.DS_Store
+*.swp

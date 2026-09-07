@@ -1,0 +1,15 @@
+{
+  "_note": "DRAFT — not a valid plugin manifest yet. Entry-point QML files do not exist until the rebuild. Rename to manifest.json and finalize kinds/entryPoints once the plugin approach (native QML overlay+service, vs wrapper) is chosen. `omarchy plugin validate` will fail until then.",
+  "schemaVersion": 1,
+  "id": "com.lunchsofts.recast",
+  "name": "Recast",
+  "version": "0.1.0",
+  "author": "Lunchsofts",
+  "license": "MIT",
+  "description": "Transform selected text or chat with an LLM (OpenRouter), streamed, with follow-ups.",
+  "kinds": ["overlay", "service"],
+  "entryPoints": {
+    "overlay": "Overlay.qml",
+    "service": "Service.qml"
+  }
+}
