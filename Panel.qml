@@ -61,6 +61,7 @@ Item {
   property string model: "moonshotai/kimi-k3"
   property string effort: "default"
   property bool autoCopy: true
+  property bool renderMarkdown: true     // light markdown in answers (toggle in settings)
   property string userSystemPrompt: ""   // empty = use the built-in transformPrompt
   readonly property string configPath: Quickshell.env("HOME") + "/.config/recast/config.json"
 
@@ -68,14 +69,27 @@ Item {
   // dropdown state (shared by the left Menu and the model/effort pickers)
   property string pickerKind: ""   // "" | "menu" | "model" | "effort"
   property int pickerIndex: 0
-  readonly property var menuItems: [{ id: "settings", label: "Settings" }]
-  readonly property var pickerOptions: pickerKind === "model" ? root.models
-    : (pickerKind === "effort" ? root.efforts
-    : (pickerKind === "menu" ? root.menuItems : []))
+  property string pickerFilter: ""       // type-to-filter within the model/effort dropdown
+  readonly property bool pickerFilterable: pickerKind === "model" || pickerKind === "effort"
+  readonly property var menuItems: [{ id: "new", label: "New" }, { id: "settings", label: "Settings" }]
+  readonly property var pickerOptions: {
+    var base = pickerKind === "model" ? root.models
+      : (pickerKind === "effort" ? root.efforts
+      : (pickerKind === "menu" ? root.menuItems : []))
+    if (!root.pickerFilterable || root.pickerFilter === "") return base
+    var f = root.pickerFilter.toLowerCase(), out = []
+    for (var i = 0; i < base.length; i++) if (base[i].label.toLowerCase().indexOf(f) !== -1) out.push(base[i])
+    return out
+  }
 
   // padding scales with the theme font size (Style.space multiplies by the font scale)
   readonly property int padH: Style.space(20)
   readonly property int padV: Style.space(15)
+  readonly property int barFont: Style.font.subtitle   // one consistent top-bar font size
+
+  // the input owns the caret only when no dropdown/settings/action-nav is active
+  readonly property bool inputActive: input.activeFocus && root.pickerKind === ""
+    && root.actionFocus < 0 && !root.settingsOpen && !root.busy
 
   // virtual keyboard focus into the action rows below the input (-1 = the input itself)
   property int actionFocus: -1
@@ -266,6 +280,7 @@ Item {
 
   // ---- actions ------------------------------------------------------------------------
   function copyText(t) { copyProc.command = ["wl-copy", "--", t]; copyProc.running = true }
+  function openLink(url) { linkProc.command = ["xdg-open", String(url)]; linkProc.running = true }
   function copyLast() { if (root.lastAnswer !== "") { copyText(root.lastAnswer); root.copiedHint = "copied ✓" } }
   function regenerate() {
     if (root.busy || root.lastAnswer === "") return
@@ -301,15 +316,24 @@ Item {
   // ---- model / effort pickers + config persistence ------------------------------------
   function indexOfId(list, id) { for (var i = 0; i < list.length; i++) if (list[i].id === id) return i; return 0 }
   function togglePicker(kind) {
+    root.pickerFilter = ""
     if (root.pickerKind === kind) { root.pickerKind = ""; return }
     root.pickerKind = kind
     root.pickerIndex = (kind === "model") ? root.indexOfId(root.models, root.model)
       : (kind === "effort" ? root.indexOfId(root.efforts, root.effort) : 0)
   }
-  function closePicker() { root.pickerKind = "" }
+  function closePicker() { root.pickerKind = ""; root.pickerFilter = "" }
   function pickerMove(d) {
     var n = root.pickerOptions.length
     if (n > 0) root.pickerIndex = (root.pickerIndex + d + n) % n
+  }
+  function pickerType(ch) {   // type-to-filter
+    if (!root.pickerFilterable) return
+    root.pickerFilter += ch
+    root.pickerIndex = 0
+  }
+  function pickerBackspace() {
+    if (root.pickerFilter.length > 0) { root.pickerFilter = root.pickerFilter.slice(0, -1); root.pickerIndex = 0 }
   }
   function pickerCommit() {
     var opt = root.pickerOptions[root.pickerIndex]
@@ -318,9 +342,21 @@ Item {
       else if (root.pickerKind === "effort") root.setEffort(opt.id)
       else if (root.pickerKind === "menu") root.runMenu(opt.id)
     }
-    root.pickerKind = ""
+    root.pickerKind = ""; root.pickerFilter = ""
   }
-  function runMenu(id) { if (id === "settings") root.openSettings() }
+  function runMenu(id) {
+    if (id === "settings") root.openSettings()
+    else if (id === "new") root.newConversation()
+  }
+  function newConversation() {
+    if (streamProc.running) streamProc.running = false
+    root.messages = []; root.history = []
+    root.answer = ""; root.errorText = ""; root.lastAnswer = ""; root.copiedHint = ""
+    root.pendingUser = ""; root.actionFocus = -1
+    root.busy = false; root.streaming = false
+    input.text = ""
+    Qt.callLater(function () { input.forceActiveFocus() })
+  }
 
   // ---- action-row keyboard nav (Copy / Regenerate / Insert) ---------------------------
   function actionMove(d) {
@@ -369,11 +405,13 @@ Item {
     if (ctrl && event.key === Qt.Key_Comma) { root.openSettings(); event.accepted = true; return }
     if (ctrl && shift && event.key === Qt.Key_C) { root.copyLast(); event.accepted = true; return }
 
-    if (root.pickerKind !== "") {   // a dropdown is open: drive it, swallow the rest
+    if (root.pickerKind !== "") {   // a dropdown is open: drive it (type-to-filter), swallow the rest
       if (event.key === Qt.Key_Up) root.pickerMove(-1)
       else if (event.key === Qt.Key_Down) root.pickerMove(1)
       else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.pickerCommit()
       else if (event.key === Qt.Key_Escape) root.closePicker()
+      else if (event.key === Qt.Key_Backspace) root.pickerBackspace()
+      else if (root.pickerFilterable && event.text.length === 1 && event.text.charCodeAt(0) >= 0x20) root.pickerType(event.text)
       event.accepted = true
       return
     }
@@ -405,7 +443,8 @@ Item {
   function setEffort(id) { root.effort = id; saveConfig() }
   function saveConfig() {
     cfgFile.setText(JSON.stringify({
-      model: root.model, effort: root.effort, autoCopy: root.autoCopy, systemPrompt: root.userSystemPrompt
+      model: root.model, effort: root.effort, autoCopy: root.autoCopy,
+      renderMarkdown: root.renderMarkdown, systemPrompt: root.userSystemPrompt
     }, null, 2) + "\n")
   }
   function openSettings() {
@@ -423,6 +462,7 @@ Item {
     Qt.callLater(function () { input.forceActiveFocus() })
   }
   function toggleAutoCopy() { root.autoCopy = !root.autoCopy; saveConfig() }
+  function toggleMarkdown() { root.renderMarkdown = !root.renderMarkdown; saveConfig() }
   function resetSystemPrompt() { sysEdit.text = root.transformPrompt }
 
   FileView {
@@ -437,6 +477,7 @@ Item {
         if (c.model) root.model = c.model
         if (c.effort) root.effort = c.effort
         if (c.autoCopy !== undefined) root.autoCopy = !!c.autoCopy
+        if (c.renderMarkdown !== undefined) root.renderMarkdown = !!c.renderMarkdown
         if (c.systemPrompt !== undefined) root.userSystemPrompt = String(c.systemPrompt || "")
       } catch (e) {}
     }
@@ -464,6 +505,7 @@ Item {
   }
   Process { id: copyProc }
   Process { id: insertProc }
+  Process { id: linkProc }
   Process { id: mkdirProc; command: ["mkdir", "-p", Quickshell.env("HOME") + "/.config/recast"] }
   Component.onCompleted: mkdirProc.running = true
 
@@ -599,6 +641,23 @@ Item {
               Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
             }
 
+            // render-markdown toggle
+            Item {
+              width: parent.width; height: Style.font.body + root.padV * 2
+              Row {
+                x: root.padH; anchors.verticalCenter: parent.verticalCenter; spacing: 12
+                Rectangle {
+                  width: 16; height: 16; anchors.verticalCenter: parent.verticalCenter
+                  color: root.renderMarkdown ? Color.accent : "transparent"
+                  border.color: root.renderMarkdown ? Color.accent : Util.alpha(Color.menu.border, 0.6); border.width: 1
+                  Text { anchors.centerIn: parent; visible: root.renderMarkdown; text: "✓"; color: Color.menu.background; font.pixelSize: 11; font.family: Style.font.family }
+                }
+                Text { anchors.verticalCenter: parent.verticalCenter; text: "Render light markdown in answers"; color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body }
+              }
+              MouseArea { anchors.fill: parent; onClicked: root.toggleMarkdown() }
+              Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
+            }
+
             // system prompt (transform mode) + reset
             Item {
               width: parent.width; height: sysCol.implicitHeight + root.padV * 2
@@ -625,11 +684,14 @@ Item {
                       wrapMode: TextEdit.Wrap; selectByMouse: true
                       selectionColor: Util.alpha(Color.accent, 0.35)
                       cursorDelegate: Rectangle { width: 2; height: sysEdit.cursorRectangle.height; color: Color.accent }
-                      Keys.onEscapePressed: root.closeSettings()
+                      Keys.onPressed: function (event) {
+                        if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) { root.closeSettings(); event.accepted = true }
+                        else if (event.key === Qt.Key_Escape) { root.closeSettings(); event.accepted = true }
+                      }
                     }
                   }
                 }
-                Text { width: parent.width; text: "Esc to save & close."; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+                Text { width: parent.width; text: "Ctrl+Enter or Esc to save & close."; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
               }
             }
           }
@@ -648,32 +710,51 @@ Item {
         color: Color.menu.background
         border.color: Color.menu.border
         border.width: Math.max(1, Style.space(2))
-        height: Math.min(pickCol.implicitHeight, root.maxHeight - 48)
-        Flickable {
-          anchors.fill: parent
-          contentHeight: pickCol.implicitHeight
-          clip: true
-          Column {
-            id: pickCol
-            width: parent.width
-            Repeater {
-              model: root.pickerOptions
-              delegate: Item {
-                required property var modelData
-                required property int index
-                width: pickCol.width
-                height: 40
-                Rectangle { anchors.fill: parent; color: index === root.pickerIndex ? Color.menu.selectedBackground : "transparent" }
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  anchors.left: parent.left; anchors.leftMargin: 16; anchors.right: parent.right; anchors.rightMargin: 16
-                  text: modelData.label
-                  color: index === root.pickerIndex ? Color.menu.selectedText : Color.menu.text
-                  font.family: Style.font.family; font.pixelSize: Style.font.body
-                  elide: Text.ElideRight
+        readonly property int headerH: root.pickerFilterable ? 34 : 0
+        readonly property int listH: Math.min(pickCol.implicitHeight, (root.maxHeight - 48) - headerH)
+        height: headerH + listH
+        Column {
+          width: parent.width
+          // type-to-filter header
+          Item {
+            width: parent.width; height: dropdown.headerH; visible: root.pickerFilterable
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.left: parent.left; anchors.leftMargin: 16; anchors.right: parent.right; anchors.rightMargin: 16
+              text: root.pickerFilter === "" ? "Type to filter…" : root.pickerFilter
+              color: root.pickerFilter === "" ? Color.muted : Color.menu.text
+              font.family: Style.font.family; font.pixelSize: root.barFont; elide: Text.ElideRight
+            }
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
+          }
+          Flickable {
+            width: parent.width; height: dropdown.listH
+            contentHeight: pickCol.implicitHeight
+            clip: true
+            Column {
+              id: pickCol
+              width: parent.width
+              Repeater {
+                model: root.pickerOptions
+                delegate: Item {
+                  required property var modelData
+                  required property int index
+                  width: pickCol.width
+                  height: 38
+                  Rectangle { anchors.fill: parent; color: index === root.pickerIndex ? Color.menu.selectedBackground : "transparent" }
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left; anchors.leftMargin: 16; anchors.right: parent.right; anchors.rightMargin: 16
+                    text: modelData.label
+                    color: index === root.pickerIndex ? Color.menu.selectedText : Color.menu.text
+                    font.family: Style.font.family; font.pixelSize: root.barFont
+                    elide: Text.ElideRight
+                  }
+                  MouseArea { anchors.fill: parent; onClicked: { root.pickerIndex = index; root.pickerCommit() } }
                 }
-                MouseArea { anchors.fill: parent; onClicked: { root.pickerIndex = index; root.pickerCommit() } }
               }
+              Item { visible: root.pickerOptions.length === 0; width: pickCol.width; height: 38
+                Text { anchors.centerIn: parent; text: "No matches"; color: Color.muted; font.family: Style.font.family; font.pixelSize: root.barFont } }
             }
           }
         }
@@ -698,16 +779,11 @@ Item {
             Row {
               anchors.verticalCenter: parent.verticalCenter
               anchors.left: parent.left; anchors.leftMargin: root.padH
-              spacing: 14
-              Text {
-                text: "Menu ⌄"
-                color: root.pickerKind === "menu" ? Color.menu.selectedText : Color.menu.text
-                font.family: Style.font.family; font.pixelSize: Style.font.title
-                MouseArea { anchors.fill: parent; onClicked: root.togglePicker("menu") }
-              }
-              Text { text: "Recast"; color: Color.menu.text; font.bold: true; font.family: Style.font.family; font.pixelSize: Style.font.title }
-              Text { visible: root.mode === "transform" && root.sourceApp !== ""; text: "›"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.title }
-              Text { visible: root.mode === "transform" && root.sourceApp !== ""; text: root.sourceApp; color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.title }
+              spacing: 12
+              TopPicker { label: "Menu"; active: root.pickerKind === "menu"; onClicked: root.togglePicker("menu") }
+              Text { text: "Recast"; color: Color.menu.text; font.bold: true; font.family: Style.font.family; font.pixelSize: root.barFont }
+              Text { visible: root.mode === "transform" && root.sourceApp !== ""; text: "›"; color: Color.muted; font.family: Style.font.family; font.pixelSize: root.barFont }
+              Text { visible: root.mode === "transform" && root.sourceApp !== ""; text: root.sourceApp; color: Color.menu.text; font.family: Style.font.family; font.pixelSize: root.barFont }
             }
             Row {
               anchors.verticalCenter: parent.verticalCenter
@@ -769,6 +845,9 @@ Item {
                   color: modelData.isError ? Color.urgent : Color.menu.text
                   font.family: Style.font.family; font.pixelSize: Style.font.body
                   wrapMode: Text.WordWrap
+                  textFormat: (!modelData.isError && root.renderMarkdown) ? Text.MarkdownText : Text.PlainText
+                  linkColor: Color.accent
+                  onLinkActivated: function (url) { root.openLink(url) }
                 }
               }
               Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
@@ -791,6 +870,7 @@ Item {
                 color: root.streaming ? Color.menu.text : Color.accent   // themed spinner glyph
                 font.family: Style.font.family; font.pixelSize: Style.font.body
                 wrapMode: Text.WordWrap
+                textFormat: (root.streaming && root.renderMarkdown) ? Text.MarkdownText : Text.PlainText
               }
             }
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
@@ -809,7 +889,23 @@ Item {
               wrapMode: TextEdit.Wrap
               selectByMouse: true
               selectionColor: Util.alpha(Color.accent, 0.35)
-              cursorDelegate: Rectangle { width: 2; height: input.cursorRectangle.height; color: Color.accent }
+              // caret shows only when the input truly owns focus (not while a dropdown / settings /
+              // action-nav is active), and blinks cleanly.
+              cursorVisible: root.inputActive
+              cursorDelegate: Rectangle {
+                width: 2
+                height: input.cursorRectangle.height
+                color: Color.accent
+                visible: root.inputActive
+                SequentialAnimation on opacity {
+                  running: root.inputActive
+                  loops: Animation.Infinite
+                  NumberAnimation { to: 1; duration: 1 }
+                  PauseAnimation { duration: 550 }
+                  NumberAnimation { to: 0; duration: 1 }
+                  PauseAnimation { duration: 550 }
+                }
+              }
               Text {
                 visible: input.text.length === 0
                 text: root.history.length > 0 ? "Ask a follow-up…"
@@ -855,21 +951,16 @@ Item {
     }
   }
 
-  // clickable top-bar picker button (label + caret)
-  component TopPicker: Item {
+  // clickable top-bar picker button (label + caret as one baseline-aligned text)
+  component TopPicker: Text {
     id: tp
     property string label: ""
     property bool active: false
     signal clicked()
-    implicitWidth: tprow.implicitWidth
-    implicitHeight: 40
-    Row {
-      id: tprow
-      anchors.centerIn: parent
-      spacing: 6
-      Text { text: tp.label; color: tp.active ? Color.menu.selectedText : Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body }
-      Text { text: "⌄"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.body }
-    }
+    text: tp.label + "  ⌄"          // ⌄ shares the label's baseline (well-aligned)
+    color: tp.active ? Color.menu.selectedText : Color.menu.text
+    font.family: Style.font.family
+    font.pixelSize: root.barFont
     MouseArea { anchors.fill: parent; onClicked: tp.clicked() }
   }
 

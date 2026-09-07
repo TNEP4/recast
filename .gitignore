@@ -17,4 +17,4 @@ build/
 *.swp
 
 # local dev screenshot
-.dev-summon.png
+.dev-*.png
