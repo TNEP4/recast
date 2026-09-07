@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# SUPER+BACKSPACE is Omarchy's "toggle window transparency" bind. Hyprland keybinds fire
+# before any surface (even Recast's focus-exclusive layer), so the panel never sees the key.
+# When Recast is open we want that chord to wipe the current input line instead (this is
+# "Cmd/Super + Delete" on a Mac keyboard, whose Delete key is Backspace). Route accordingly:
+# Recast open -> wipe the line over IPC; otherwise fall through to the normal transparency toggle.
+ID=io.github.tnep4.recast
+
+if hyprctl layers 2>/dev/null | grep -q 'namespace: recast'; then
+  exec omarchy-shell shell call "$ID" wipeLine ""
+else
+  exec omarchy-hyprland-window-transparency-toggle
+fi

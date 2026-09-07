@@ -31,7 +31,17 @@ Item {
     "instructions, refine your previous answer."
   readonly property string chatPrompt:
     "You are Recast, a helpful, concise assistant. Answer the user directly and clearly. " +
-    "Keep formatting light (plain text; the answer is shown in a simple text view)."
+    "Keep formatting light (plain text; the answer is shown in a simple text view). " +
+    "For context: today is {current-date-time}. The user is currently in {location}. " +
+    "The active window is {currently-opened-app}. Use this context only when it's relevant."
+  // dynamic placeholders any system prompt can use, expanded at send time
+  function expandPrompt(text) {
+    if (!text) return text
+    return text
+      .replace(/\{current-date-time\}/g, Qt.formatDateTime(new Date(), "dddd d MMMM yyyy, HH:mm"))
+      .replace(/\{location\}/g, root.location !== "" ? root.location : "unknown")
+      .replace(/\{currently-opened-app\}/g, root.sourceApp !== "" ? root.sourceApp : "unknown")
+  }
   readonly property string spinnerFrames: "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
   readonly property var terminalClasses: ["org.omarchy.terminal", "Alacritty", "kitty", "foot",
     "org.codeberg.dnkl.foot", "com.mitchellh.ghostty"]
@@ -58,22 +68,27 @@ Item {
     { id: "default", label: "Default" }, { id: "minimal", label: "Minimal" }, { id: "low", label: "Low" },
     { id: "medium", label: "Medium" }, { id: "high", label: "High" }, { id: "max", label: "Max" }
   ]
+  // user-added OpenRouter model paths (org/slug), each {id,label,reasoning}; persisted to config
+  property var customModels: []
+  readonly property var allModels: root.models.concat(root.customModels)
   property string model: "moonshotai/kimi-k3"
   property string effort: "default"
   property bool autoCopy: true
   property bool renderMarkdown: true     // light markdown in answers (toggle in settings)
   property string userSystemPrompt: ""   // empty = use the built-in transformPrompt
+  property string location: ""           // for the {location} placeholder (Omarchy weather setting)
   readonly property string configPath: Quickshell.env("HOME") + "/.config/recast/config.json"
 
   property bool settingsOpen: false
   // dropdown state (shared by the left Menu and the model/effort pickers)
   property string pickerKind: ""   // "" | "menu" | "model" | "effort"
   property int pickerIndex: 0
+  onPickerIndexChanged: root.ensurePickerVisible()
   property string pickerFilter: ""       // type-to-filter within the model/effort dropdown
   readonly property bool pickerFilterable: pickerKind === "model" || pickerKind === "effort"
-  readonly property var menuItems: [{ id: "new", label: "New" }, { id: "settings", label: "Settings" }]
+  readonly property var menuItems: [{ id: "new", label: "New", hint: "Ctrl+N" }, { id: "settings", label: "Settings", hint: "Ctrl+," }]
   readonly property var pickerOptions: {
-    var base = pickerKind === "model" ? root.models
+    var base = pickerKind === "model" ? root.allModels
       : (pickerKind === "effort" ? root.efforts
       : (pickerKind === "menu" ? root.menuItems : []))
     if (!root.pickerFilterable || root.pickerFilter === "") return base
@@ -122,12 +137,28 @@ Item {
 
   readonly property int maxHeight: Math.round((panel.height > 0 ? panel.height : 1000) * 0.82)
 
+  // acronyms to uppercase when prettifying a model slug into a label
+  readonly property var modelAcronyms: ["gpt", "glm", "ai", "llm", "xai", "ibm", "tts", "vl", "moe", "hd", "r1"]
+  // turn an OpenRouter path (org/slug[:variant]) into a clean display label, e.g.
+  // "ibm-granite/granite-4.2-8b" -> "Granite 4.2 8b", "openai/gpt-4o" -> "GPT 4o"
+  function prettyModel(path) {
+    var slug = String(path).split(":")[0].split("/").pop()
+    var words = slug.split(/[-_]/), out = []
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i]
+      if (w === "") continue
+      if (root.modelAcronyms.indexOf(w.toLowerCase()) !== -1) out.push(w.toUpperCase())   // GPT, GLM…
+      else if (/^\d/.test(w)) out.push(w)                                                 // 4.2, 8b, 4o
+      else out.push(w.charAt(0).toUpperCase() + w.slice(1))                               // Claude, V4, K3…
+    }
+    return out.join(" ") || String(path)
+  }
   function modelLabel(id) {
-    for (var i = 0; i < root.models.length; i++) if (root.models[i].id === id) return root.models[i].label
+    for (var i = 0; i < root.allModels.length; i++) if (root.allModels[i].id === id) return root.allModels[i].label
     return id
   }
   function modelReasoning(id) {
-    for (var i = 0; i < root.models.length; i++) if (root.models[i].id === id) return root.models[i].reasoning
+    for (var i = 0; i < root.allModels.length; i++) if (root.allModels[i].id === id) return root.allModels[i].reasoning
     return true   // unknown/custom: assume yes, let the API decide
   }
   function effortLabel(id) {
@@ -197,12 +228,12 @@ Item {
     if (root.messages.length === 0) {
       if (root.selection !== "") {
         root.messages = [
-          { role: "system", content: root.userSystemPrompt !== "" ? root.userSystemPrompt : root.transformPrompt },
+          { role: "system", content: root.expandPrompt(root.userSystemPrompt !== "" ? root.userSystemPrompt : root.transformPrompt) },
           { role: "user", content: "Instruction: " + instruction + "\n\nText:\n" + root.selection }
         ]
       } else {
         root.messages = [
-          { role: "system", content: root.chatPrompt },
+          { role: "system", content: root.expandPrompt(root.chatPrompt) },
           { role: "user", content: instruction }
         ]
       }
@@ -319,8 +350,17 @@ Item {
     root.pickerFilter = ""
     if (root.pickerKind === kind) { root.pickerKind = ""; return }
     root.pickerKind = kind
-    root.pickerIndex = (kind === "model") ? root.indexOfId(root.models, root.model)
+    root.pickerIndex = (kind === "model") ? root.indexOfId(root.allModels, root.model)
       : (kind === "effort" ? root.indexOfId(root.efforts, root.effort) : 0)
+    Qt.callLater(root.ensurePickerVisible)
+  }
+  // keep the highlighted row within the scroll viewport (keyboard nav)
+  function ensurePickerVisible() {
+    if (!pickFlick.visible || pickFlick.height <= 0) return
+    var top = root.pickerIndex * dropdown.rowH
+    var bottom = top + dropdown.rowH
+    if (top < pickFlick.contentY) pickFlick.contentY = top
+    else if (bottom > pickFlick.contentY + pickFlick.height) pickFlick.contentY = bottom - pickFlick.height
   }
   function closePicker() { root.pickerKind = ""; root.pickerFilter = "" }
   function pickerMove(d) {
@@ -377,20 +417,29 @@ Item {
 
   // ---- input editing (multi-line) -----------------------------------------------------
   function atLastLine() { return input.text.indexOf("\n", input.cursorPosition) < 0 }
+  function wordLeft(pos) {   // start of the word before pos (skips the run of spaces first)
+    var t = input.text, i = pos
+    while (i > 0 && /\s/.test(t.charAt(i - 1))) i--
+    while (i > 0 && !/\s/.test(t.charAt(i - 1))) i--
+    return i
+  }
+  function wordRight(pos) {   // end of the word after pos (skips the run of spaces first)
+    var t = input.text, n = t.length, i = pos
+    while (i < n && /\s/.test(t.charAt(i))) i++
+    while (i < n && !/\s/.test(t.charAt(i))) i++
+    return i
+  }
   function deleteWordBack() {
-    var t = input.text, c = input.cursorPosition
+    var c = input.cursorPosition
     if (c === 0) return
-    var i = c
-    while (i > 0 && /\s/.test(t.charAt(i - 1))) i--   // eat the run of spaces before the cursor
-    while (i > 0 && !/\s/.test(t.charAt(i - 1))) i--  // then the word
-    input.text = t.slice(0, i) + t.slice(c)
+    var i = root.wordLeft(c)
+    input.text = input.text.slice(0, i) + input.text.slice(c)
     input.cursorPosition = i
   }
-  function wipeLine() {
+  function wipeLine() {   // delete from the start of the current line up to the cursor
     var t = input.text, c = input.cursorPosition
     var start = t.lastIndexOf("\n", c - 1) + 1
-    var end = t.indexOf("\n", c); if (end < 0) end = t.length
-    input.text = t.slice(0, start) + t.slice(end)
+    input.text = t.slice(0, start) + t.slice(c)
     input.cursorPosition = start
   }
 
@@ -403,6 +452,7 @@ Item {
     if (ctrl && event.key === Qt.Key_M) { root.togglePicker("model"); event.accepted = true; return }
     if (ctrl && event.key === Qt.Key_E && root.modelReasoning(root.model)) { root.togglePicker("effort"); event.accepted = true; return }
     if (ctrl && event.key === Qt.Key_Comma) { root.openSettings(); event.accepted = true; return }
+    if (ctrl && event.key === Qt.Key_N) { root.newConversation(); event.accepted = true; return }
     if (ctrl && shift && event.key === Qt.Key_C) { root.copyLast(); event.accepted = true; return }
 
     if (root.pickerKind !== "") {   // a dropdown is open: drive it (type-to-filter), swallow the rest
@@ -424,11 +474,17 @@ Item {
       root.actionFocus = -1   // any other key drops back to typing in the input
     }
 
+    // Select all — Ctrl+A (and Meta+A for Cmd on bare-metal Mac)
     if ((ctrl || meta) && event.key === Qt.Key_A) { input.selectAll(); event.accepted = true; return }
-    if ((alt || ctrl) && event.key === Qt.Key_Backspace) { root.deleteWordBack(); event.accepted = true; return }
+    // Delete previous word — Option/Alt+Backspace (Delete), Ctrl+Backspace, Ctrl+W
+    if ((alt || ctrl) && (event.key === Qt.Key_Backspace || event.key === Qt.Key_Delete)) { root.deleteWordBack(); event.accepted = true; return }
     if (ctrl && event.key === Qt.Key_W) { root.deleteWordBack(); event.accepted = true; return }
+    // Jump the cursor by whole word — Option/Alt+Left / +Right
+    if (alt && event.key === Qt.Key_Left) { input.cursorPosition = root.wordLeft(input.cursorPosition); event.accepted = true; return }
+    if (alt && event.key === Qt.Key_Right) { input.cursorPosition = root.wordRight(input.cursorPosition); event.accepted = true; return }
+    // Wipe the current line — Cmd/Super+Backspace (Delete) [forwarded via Hyprland], or Ctrl+U
+    if (meta && (event.key === Qt.Key_Backspace || event.key === Qt.Key_Delete)) { root.wipeLine(); event.accepted = true; return }
     if (ctrl && event.key === Qt.Key_U) { root.wipeLine(); event.accepted = true; return }
-    if (meta && (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace)) { root.wipeLine(); event.accepted = true; return }
 
     if (event.key === Qt.Key_Down && root.actionsList.length > 0 && root.atLastLine()) {
       root.actionFocus = 0; event.accepted = true; return
@@ -442,21 +498,40 @@ Item {
   }
   function setModel(id) { root.model = id; saveConfig() }
   function setEffort(id) { root.effort = id; saveConfig() }
+  // add a custom OpenRouter model by path (org/slug). Returns true if accepted.
+  function addCustomModel(path) {
+    var p = String(path).replace(/^\s+|\s+$/g, "")
+    if (p === "" || p.indexOf("/") < 1 || /\s/.test(p)) return false   // must be org/slug, no spaces
+    for (var i = 0; i < root.allModels.length; i++)
+      if (root.allModels[i].id === p) { root.model = p; saveConfig(); return true }   // already known → just select it
+    var list = root.customModels.slice()
+    list.push({ id: p, label: root.prettyModel(p), reasoning: true })
+    root.customModels = list
+    root.model = p            // select the freshly added model
+    saveConfig()
+    return true
+  }
+  function removeCustomModel(id) {
+    var list = []
+    for (var i = 0; i < root.customModels.length; i++)
+      if (root.customModels[i].id !== id) list.push(root.customModels[i])
+    root.customModels = list
+    if (root.model === id) root.model = root.models[0].id   // fall back to a built-in
+    saveConfig()
+  }
   function saveConfig() {
     cfgFile.setText(JSON.stringify({
       model: root.model, effort: root.effort, autoCopy: root.autoCopy,
-      renderMarkdown: root.renderMarkdown, systemPrompt: root.userSystemPrompt
+      renderMarkdown: root.renderMarkdown, systemPrompt: root.userSystemPrompt,
+      customModels: root.customModels.map(function (m) { return m.id })
     }, null, 2) + "\n")
   }
   function openSettings() {
-    modelField.text = root.model
     sysEdit.text = root.userSystemPrompt !== "" ? root.userSystemPrompt : root.transformPrompt
     root.settingsOpen = true
     Qt.callLater(function () { keyField.forceActiveFocus() })
   }
   function closeSettings() {
-    var m = modelField.text.replace(/^\s+|\s+$/g, "")
-    if (m !== "" && m !== root.model) root.model = m
     root.userSystemPrompt = (sysEdit.text === root.transformPrompt) ? "" : sysEdit.text
     saveConfig()
     root.settingsOpen = false; keyField.text = ""
@@ -480,6 +555,8 @@ Item {
         if (c.autoCopy !== undefined) root.autoCopy = !!c.autoCopy
         if (c.renderMarkdown !== undefined) root.renderMarkdown = !!c.renderMarkdown
         if (c.systemPrompt !== undefined) root.userSystemPrompt = String(c.systemPrompt || "")
+        if (Array.isArray(c.customModels))
+          root.customModels = c.customModels.map(function (id) { return { id: String(id), label: root.prettyModel(id), reasoning: true } })
       } catch (e) {}
     }
   }
@@ -508,7 +585,13 @@ Item {
   Process { id: insertProc }
   Process { id: linkProc }
   Process { id: mkdirProc; command: ["mkdir", "-p", Quickshell.env("HOME") + "/.config/recast"] }
-  Component.onCompleted: mkdirProc.running = true
+  // user's location for the {location} placeholder — from Omarchy's weather setting, cached
+  Process {
+    id: locProc
+    command: ["omarchy-weather-location"]
+    stdout: SplitParser { onRead: function (line) { var s = line.replace(/^\s+|\s+$/g, ""); if (s !== "") root.location = s } }
+  }
+  Component.onCompleted: { mkdirProc.running = true; locProc.running = true }
 
   Timer {
     interval: 90; repeat: true; running: root.busy && !root.streaming
@@ -533,13 +616,14 @@ Item {
 
     Rectangle {
       id: card
+      readonly property int bw: Math.max(1, Style.space(2))
       width: 640
-      height: Math.min(root.settingsOpen ? settingsView.implicitHeight : content.implicitHeight, root.maxHeight)
+      height: Math.min(root.settingsOpen ? setCol.implicitHeight + card.bw * 2 : content.implicitHeight, root.maxHeight)
       anchors.horizontalCenter: parent.horizontalCenter
       y: Math.max(Style.gapsOut, Math.round((panel.height - height) / 2))
       color: Color.menu.background
       border.color: Color.menu.border
-      border.width: Math.max(1, Style.space(2))
+      border.width: card.bw
       radius: Style.cornerRadius
 
       MouseArea { anchors.fill: parent }   // swallow clicks so the scrim close doesn't fire
@@ -549,10 +633,9 @@ Item {
         id: settingsView
         visible: root.settingsOpen
         z: 20
-        anchors.top: parent.top; anchors.left: parent.left
-        width: parent.width
-        implicitHeight: Math.min(setCol.implicitHeight, root.maxHeight)
-        height: implicitHeight
+        anchors.fill: parent
+        anchors.margins: card.bw     // sit inside the card border so it stays visible
+        radius: Math.max(0, Style.cornerRadius - card.bw)
         color: Color.menu.background
         Flickable {
           anchors.fill: parent
@@ -600,26 +683,72 @@ Item {
               Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
             }
 
-            // model id (any OpenRouter model; the top-bar picker sets this too)
+            // custom models — add any OpenRouter model path; they join the top-bar model picker
             Item {
-              width: parent.width; height: modelCol.implicitHeight + root.padV * 2
+              width: parent.width; height: cmCol.implicitHeight + root.padV * 2
               Column {
-                id: modelCol
+                id: cmCol
                 x: root.padH; y: root.padV; width: parent.width - root.padH * 2; spacing: 8
-                Text { text: "Model id"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+                Text { text: "Custom models"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+                // add field: paste an OpenRouter path, Enter to add
                 Rectangle {
                   width: parent.width; height: Style.font.body + 18; color: "transparent"
-                  border.color: modelField.activeFocus ? Color.menu.selectedText : Util.alpha(Color.menu.border, 0.5); border.width: 1
+                  border.color: cmField.activeFocus ? Color.menu.selectedText : Util.alpha(Color.menu.border, 0.5); border.width: 1
                   TextInput {
-                    id: modelField
+                    id: cmField
                     anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
                     verticalAlignment: TextInput.AlignVCenter
                     color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body; clip: true
-                    cursorDelegate: Rectangle { width: 2; height: modelField.cursorRectangle.height; color: Color.accent }
-                    Keys.onReturnPressed: root.closeSettings()
-                    Keys.onEnterPressed: root.closeSettings()
+                    cursorDelegate: Rectangle { width: 2; height: cmField.cursorRectangle.height; color: Color.accent }
+                    Keys.onReturnPressed: { if (root.addCustomModel(cmField.text)) cmField.text = "" }
+                    Keys.onEnterPressed: { if (root.addCustomModel(cmField.text)) cmField.text = "" }
                     Keys.onEscapePressed: root.closeSettings()
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter; visible: cmField.text.length === 0
+                      text: "openai/gpt-4o — paste a model path, press Enter"
+                      color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.body
+                    }
                   }
+                }
+                // current custom models, each with a remove control
+                Repeater {
+                  model: root.customModels
+                  delegate: Item {
+                    required property var modelData
+                    required property int index
+                    width: cmCol.width; height: nameCol.implicitHeight + 14
+                    Column {
+                      id: nameCol
+                      anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                      anchors.right: rmBtn.left; anchors.rightMargin: 8; spacing: 1
+                      Text {
+                        width: parent.width; text: modelData.label; color: Color.menu.text; elide: Text.ElideRight
+                        font.family: Style.font.family; font.pixelSize: Style.font.body
+                      }
+                      Text {
+                        width: parent.width; text: modelData.id; color: Color.muted; elide: Text.ElideRight
+                        font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
+                      }
+                    }
+                    Text {
+                      id: rmBtn
+                      anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                      text: "✕"; color: rmHover.hovered ? Color.urgent : Color.muted
+                      font.family: Style.font.family; font.pixelSize: Style.font.body
+                      HoverHandler { id: rmHover }
+                      MouseArea { anchors.fill: parent; anchors.margins: -6; onClicked: root.removeCustomModel(modelData.id) }
+                    }
+                    Rectangle {
+                      visible: index < root.customModels.length - 1   // between rows, not after the last
+                      anchors.bottom: parent.bottom; width: parent.width; height: 1
+                      color: Util.alpha(Color.menu.border, 0.25)
+                    }
+                  }
+                }
+                Text {
+                  visible: root.customModels.length === 0
+                  text: "Add the newest OpenRouter models here — they show up in the model picker."
+                  color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
                 }
               }
               Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
@@ -692,6 +821,11 @@ Item {
                     }
                   }
                 }
+                Text {
+                  width: parent.width; wrapMode: Text.Wrap
+                  text: "Placeholders (filled in on send): {current-date-time}, {location}, {currently-opened-app}."
+                  color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
+                }
                 Text { width: parent.width; text: "Ctrl+Enter or Esc to save & close."; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
               }
             }
@@ -712,7 +846,8 @@ Item {
         border.color: Color.menu.border
         border.width: Math.max(1, Style.space(2))
         readonly property int headerH: root.pickerFilterable ? 34 : 0
-        readonly property int listH: Math.min(pickCol.implicitHeight, (root.maxHeight - 48) - headerH)
+        readonly property int rowH: 38
+        readonly property int listH: Math.min(pickCol.implicitHeight, dropdown.rowH * 10, (root.maxHeight - 48) - headerH)   // show ≤10 rows, then scroll
         height: headerH + listH
         Column {
           width: parent.width
@@ -729,9 +864,11 @@ Item {
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
           }
           Flickable {
+            id: pickFlick
             width: parent.width; height: dropdown.listH
             contentHeight: pickCol.implicitHeight
             clip: true
+            boundsBehavior: Flickable.StopAtBounds
             Column {
               id: pickCol
               width: parent.width
@@ -745,11 +882,20 @@ Item {
                   Rectangle { anchors.fill: parent; color: index === root.pickerIndex ? Color.menu.selectedBackground : "transparent" }
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    anchors.left: parent.left; anchors.leftMargin: 16; anchors.right: parent.right; anchors.rightMargin: 16
+                    anchors.left: parent.left; anchors.leftMargin: 16
+                    anchors.right: hintText.left; anchors.rightMargin: 8
                     text: modelData.label
                     color: index === root.pickerIndex ? Color.menu.selectedText : Color.menu.text
                     font.family: Style.font.family; font.pixelSize: root.barFont
                     elide: Text.ElideRight
+                  }
+                  Text {
+                    id: hintText   // keyboard shortcut, lighter/smaller, on the far right (menu items only)
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.right: parent.right; anchors.rightMargin: 16
+                    text: modelData.hint || ""
+                    color: index === root.pickerIndex ? Util.alpha(Color.menu.selectedText, 0.6) : Color.muted
+                    font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
                   }
                   MouseArea { anchors.fill: parent; onClicked: { root.pickerIndex = index; root.pickerCommit() } }
                 }
@@ -759,11 +905,21 @@ Item {
             }
           }
         }
+        // slim scroll indicator (only when the list overflows)
+        Rectangle {
+          visible: pickCol.implicitHeight > pickFlick.height
+          width: 3; radius: 1.5
+          color: Util.alpha(Color.menu.text, 0.35)
+          anchors.right: parent.right; anchors.rightMargin: 2
+          height: Math.max(24, pickFlick.height * (pickFlick.height / Math.max(1, pickCol.implicitHeight)))
+          y: dropdown.headerH + (pickFlick.contentY / Math.max(1, pickCol.implicitHeight)) * pickFlick.height
+        }
       }
 
       Flickable {
         id: flick
         anchors.fill: parent
+        visible: !root.settingsOpen
         contentWidth: width
         contentHeight: content.implicitHeight
         clip: true
