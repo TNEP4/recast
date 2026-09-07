@@ -28,6 +28,18 @@ warnings and your new `console.warn`s won't fire). After editing `Panel.qml`, fo
 load with **`omarchy-restart-shell`** (restarts the shell/bar/overlays, not your app windows),
 then summon again. Trivial edits sometimes reload on save; structural ones need the restart.
 
+## Gotchas found while building
+
+- **Hot-reload caches keepLoaded panels** — restart the shell after structural edits (above).
+- **SSE lines arrive with a leading newline** from `SplitParser`, mixed with
+  `: OPENROUTER PROCESSING` keep-alives — normalize/trim and scan every line.
+- **Reasoning models** (e.g. Kimi K3) stream `delta.reasoning` with empty `delta.content`
+  first; only append `content`, and keep the spinner until the first content token.
+- **Omarchy's Hyprland uses Lua dispatchers** (`hl.dsp.focus`, `hl.dsp.send_shortcut`), NOT the
+  stock `focuswindow` / `sendshortcut` (which it rejects: "dispatch in lua is a shorthand for
+  hl.dispatch(...)"). Insert uses `hyprctl dispatch 'hl.dsp.send_shortcut({ mods=…, key="v",
+  window="address:…" })'`.
+
 ## Logs
 
 Plugin output goes to the shell's journal:
