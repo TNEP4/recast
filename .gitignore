@@ -15,3 +15,6 @@ build/
 # Editor / OS
 .DS_Store
 *.swp
+
+# local dev screenshot
+.dev-summon.png
