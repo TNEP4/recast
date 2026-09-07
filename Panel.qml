@@ -424,10 +424,11 @@ Item {
       root.actionFocus = -1   // any other key drops back to typing in the input
     }
 
-    if (ctrl && event.key === Qt.Key_A) { input.selectAll(); event.accepted = true; return }
+    if ((ctrl || meta) && event.key === Qt.Key_A) { input.selectAll(); event.accepted = true; return }
     if ((alt || ctrl) && event.key === Qt.Key_Backspace) { root.deleteWordBack(); event.accepted = true; return }
     if (ctrl && event.key === Qt.Key_W) { root.deleteWordBack(); event.accepted = true; return }
     if (ctrl && event.key === Qt.Key_U) { root.wipeLine(); event.accepted = true; return }
+    if (meta && (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace)) { root.wipeLine(); event.accepted = true; return }
 
     if (event.key === Qt.Key_Down && root.actionsList.length > 0 && root.atLastLine()) {
       root.actionFocus = 0; event.accepted = true; return
