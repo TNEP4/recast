@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.tnep4.recast",
   "name": "Recast",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "nictouron",
   "license": "MIT",
   "description": "Transform selected text or chat with an LLM (OpenRouter), streamed, with follow-ups.",
