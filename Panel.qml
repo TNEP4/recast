@@ -63,11 +63,26 @@ Item {
   readonly property string configPath: Quickshell.env("HOME") + "/.config/recast/config.json"
 
   property bool settingsOpen: false
-  // picker dropdown state
-  property string pickerKind: ""   // "" | "model" | "effort"
+  // dropdown state (shared by the left Menu and the model/effort pickers)
+  property string pickerKind: ""   // "" | "menu" | "model" | "effort"
   property int pickerIndex: 0
+  readonly property var menuItems: [{ id: "settings", label: "Settings" }]
   readonly property var pickerOptions: pickerKind === "model" ? root.models
-    : (pickerKind === "effort" ? root.efforts : [])
+    : (pickerKind === "effort" ? root.efforts
+    : (pickerKind === "menu" ? root.menuItems : []))
+
+  // padding scales with the theme font size (Style.space multiplies by the font scale)
+  readonly property int padH: Style.space(20)
+  readonly property int padV: Style.space(15)
+
+  // virtual keyboard focus into the action rows below the input (-1 = the input itself)
+  property int actionFocus: -1
+  readonly property var actionsList: {
+    if (root.busy || root.lastAnswer === "") return []
+    var a = ["copy", "regenerate"]
+    if (root.sourceAddr !== "") a.push("insert")
+    return a
+  }
 
   // ---- runtime state ------------------------------------------------------------------
   property string apiKey: Quickshell.env("OPENROUTER_API_KEY")
@@ -140,6 +155,9 @@ Item {
     root.copiedHint = ""
     root.busy = false
     root.streaming = false
+    root.actionFocus = -1
+    root.pickerKind = ""
+    root.settingsOpen = false
     root.opened = true
     if (!root.apiKey) keyProc.running = true
     Qt.callLater(function () { input.forceActiveFocus() })
@@ -182,6 +200,7 @@ Item {
     root.answer = ""
     root.errorText = ""
     root.copiedHint = ""
+    root.actionFocus = -1
     root.busy = true
     root.streaming = false
     startStream()
@@ -256,6 +275,7 @@ Item {
     root.lastAnswer = ""
     root.answer = ""
     root.copiedHint = ""
+    root.actionFocus = -1
     root.busy = true
     root.streaming = false
     startStream()
@@ -282,7 +302,7 @@ Item {
     if (root.pickerKind === kind) { root.pickerKind = ""; return }
     root.pickerKind = kind
     root.pickerIndex = (kind === "model") ? root.indexOfId(root.models, root.model)
-                                          : root.indexOfId(root.efforts, root.effort)
+      : (kind === "effort" ? root.indexOfId(root.efforts, root.effort) : 0)
   }
   function closePicker() { root.pickerKind = "" }
   function pickerMove(d) {
@@ -291,8 +311,92 @@ Item {
   }
   function pickerCommit() {
     var opt = root.pickerOptions[root.pickerIndex]
-    if (opt) { if (root.pickerKind === "model") root.setModel(opt.id); else root.setEffort(opt.id) }
+    if (opt) {
+      if (root.pickerKind === "model") root.setModel(opt.id)
+      else if (root.pickerKind === "effort") root.setEffort(opt.id)
+      else if (root.pickerKind === "menu") root.runMenu(opt.id)
+    }
     root.pickerKind = ""
+  }
+  function runMenu(id) { if (id === "settings") root.openSettings() }
+
+  // ---- action-row keyboard nav (Copy / Regenerate / Insert) ---------------------------
+  function actionMove(d) {
+    var n = root.actionsList.length
+    if (n === 0) return
+    if (root.actionFocus < 0) { root.actionFocus = (d > 0) ? 0 : n - 1; return }
+    var i = root.actionFocus + d
+    if (i < 0) { root.actionFocus = -1; input.forceActiveFocus(); return }   // back up into the input
+    root.actionFocus = Math.min(i, n - 1)
+  }
+  function actionTrigger() {
+    if (root.actionFocus < 0 || root.actionFocus >= root.actionsList.length) return
+    var id = root.actionsList[root.actionFocus]
+    if (id === "copy") root.copyLast()
+    else if (id === "regenerate") root.regenerate()
+    else if (id === "insert") root.insertIntoSource()
+  }
+
+  // ---- input editing (multi-line) -----------------------------------------------------
+  function atLastLine() { return input.text.indexOf("\n", input.cursorPosition) < 0 }
+  function deleteWordBack() {
+    var t = input.text, c = input.cursorPosition
+    if (c === 0) return
+    var i = c
+    while (i > 0 && /\s/.test(t.charAt(i - 1))) i--   // eat the run of spaces before the cursor
+    while (i > 0 && !/\s/.test(t.charAt(i - 1))) i--  // then the word
+    input.text = t.slice(0, i) + t.slice(c)
+    input.cursorPosition = i
+  }
+  function wipeLine() {
+    var t = input.text, c = input.cursorPosition
+    var start = t.lastIndexOf("\n", c - 1) + 1
+    var end = t.indexOf("\n", c); if (end < 0) end = t.length
+    input.text = t.slice(0, start) + t.slice(end)
+    input.cursorPosition = start
+  }
+
+  function onInputKey(event) {
+    var ctrl = event.modifiers & Qt.ControlModifier
+    var shift = event.modifiers & Qt.ShiftModifier
+    var meta = event.modifiers & Qt.MetaModifier
+    var alt = event.modifiers & Qt.AltModifier
+
+    if (ctrl && event.key === Qt.Key_M) { root.togglePicker("model"); event.accepted = true; return }
+    if (ctrl && event.key === Qt.Key_E && root.modelReasoning(root.model)) { root.togglePicker("effort"); event.accepted = true; return }
+    if (ctrl && event.key === Qt.Key_Comma) { root.openSettings(); event.accepted = true; return }
+
+    if (root.pickerKind !== "") {   // a dropdown is open: drive it, swallow the rest
+      if (event.key === Qt.Key_Up) root.pickerMove(-1)
+      else if (event.key === Qt.Key_Down) root.pickerMove(1)
+      else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.pickerCommit()
+      else if (event.key === Qt.Key_Escape) root.closePicker()
+      event.accepted = true
+      return
+    }
+
+    if (root.actionFocus >= 0) {     // navigating the action rows
+      if (event.key === Qt.Key_Up) { root.actionMove(-1); event.accepted = true; return }
+      if (event.key === Qt.Key_Down) { root.actionMove(1); event.accepted = true; return }
+      if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { root.actionTrigger(); event.accepted = true; return }
+      if (event.key === Qt.Key_Escape) { root.actionFocus = -1; event.accepted = true; return }
+      root.actionFocus = -1   // any other key drops back to typing in the input
+    }
+
+    if (ctrl && event.key === Qt.Key_A) { input.selectAll(); event.accepted = true; return }
+    if ((alt || ctrl) && event.key === Qt.Key_Backspace) { root.deleteWordBack(); event.accepted = true; return }
+    if (ctrl && event.key === Qt.Key_W) { root.deleteWordBack(); event.accepted = true; return }
+    if (ctrl && event.key === Qt.Key_U) { root.wipeLine(); event.accepted = true; return }
+
+    if (event.key === Qt.Key_Down && root.actionsList.length > 0 && root.atLastLine()) {
+      root.actionFocus = 0; event.accepted = true; return
+    }
+
+    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+      if (shift || meta) return    // Shift/Super+Return: let TextEdit insert a newline
+      root.send(); event.accepted = true; return
+    }
+    if (event.key === Qt.Key_Escape) { root.close(); event.accepted = true; return }
   }
   function setModel(id) { root.model = id; saveConfig() }
   function setEffort(id) { root.effort = id; saveConfig() }
@@ -363,7 +467,7 @@ Item {
 
     Rectangle {
       id: card
-      width: 560
+      width: 640
       height: Math.min(root.settingsOpen ? settingsView.implicitHeight : content.implicitHeight, root.maxHeight)
       anchors.horizontalCenter: parent.horizontalCenter
       y: Math.max(Style.gapsOut, Math.round((panel.height - height) / 2))
@@ -413,6 +517,7 @@ Item {
                   verticalAlignment: TextInput.AlignVCenter
                   echoMode: TextInput.Password
                   color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body; clip: true
+                  cursorDelegate: Rectangle { width: 2; height: keyField.cursorRectangle.height; color: Color.accent }
                   Text { anchors.verticalCenter: parent.verticalCenter; visible: keyField.text.length === 0; text: "sk-or-…"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.body }
                   Keys.onReturnPressed: { if (keyField.text.length > 0) root.storeKey(keyField.text); root.closeSettings() }
                   Keys.onEnterPressed: { if (keyField.text.length > 0) root.storeKey(keyField.text); root.closeSettings() }
@@ -430,13 +535,13 @@ Item {
         }
       }
 
-      // model / effort dropdown, floating over the content (top-right, under the bar)
+      // dropdown, floating over the content under the bar: Menu on the left, pickers on the right
       Rectangle {
         id: dropdown
         visible: root.pickerKind !== ""
         z: 10
         width: 240
-        anchors.right: parent.right
+        x: root.pickerKind === "menu" ? 0 : parent.width - width
         anchors.top: parent.top
         anchors.topMargin: 40
         color: Color.menu.background
@@ -485,21 +590,27 @@ Item {
           id: content
           width: flick.width
 
-          // ---- top bar: Recast › <app>  ·  model ----
+          // ---- top bar: [Menu ⌄] Recast › <app>  ...  [model] [effort] ----
           Item {
             width: parent.width
             height: 40
             Row {
               anchors.verticalCenter: parent.verticalCenter
-              anchors.left: parent.left; anchors.leftMargin: 20
-              spacing: 12
+              anchors.left: parent.left; anchors.leftMargin: root.padH
+              spacing: 14
+              Text {
+                text: "Menu ⌄"
+                color: root.pickerKind === "menu" ? Color.menu.selectedText : Color.menu.text
+                font.family: Style.font.family; font.pixelSize: Style.font.title
+                MouseArea { anchors.fill: parent; onClicked: root.togglePicker("menu") }
+              }
               Text { text: "Recast"; color: Color.menu.text; font.bold: true; font.family: Style.font.family; font.pixelSize: Style.font.title }
               Text { visible: root.mode === "transform" && root.sourceApp !== ""; text: "›"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.title }
               Text { visible: root.mode === "transform" && root.sourceApp !== ""; text: root.sourceApp; color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.title }
             }
             Row {
               anchors.verticalCenter: parent.verticalCenter
-              anchors.right: parent.right; anchors.rightMargin: 20
+              anchors.right: parent.right; anchors.rightMargin: root.padH
               spacing: 16
               TopPicker { label: root.modelLabel(root.model); active: root.pickerKind === "model"; onClicked: root.togglePicker("model") }
               TopPicker { visible: root.modelReasoning(root.model); label: root.effortLabel(root.effort); active: root.pickerKind === "effort"; onClicked: root.togglePicker("effort") }
@@ -511,10 +622,10 @@ Item {
           Item {
             visible: root.mode === "transform" && root.selection !== ""
             width: parent.width
-            height: visible ? sel.implicitHeight + 28 : 0
+            height: visible ? sel.implicitHeight + root.padV * 2 : 0
             Text {
               id: sel
-              x: 20; y: 14; width: parent.width - 40
+              x: root.padH; y: root.padV; width: parent.width - root.padH * 2
               text: root.selection
               color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body
               wrapMode: Text.WordWrap
@@ -528,10 +639,10 @@ Item {
             delegate: Item {
               required property var modelData
               width: content.width
-              implicitHeight: turn.implicitHeight + 24
+              implicitHeight: turn.implicitHeight + root.padV * 2
               Column {
                 id: turn
-                x: 20; y: 12; width: parent.width - 40
+                x: root.padH; y: root.padV; width: parent.width - root.padH * 2
                 spacing: 6
                 // user instruction (deactivated) vs assistant answer
                 Row {
@@ -567,63 +678,50 @@ Item {
           Item {
             visible: root.busy
             width: parent.width
-            height: visible ? liveCol.implicitHeight + 24 : 0
+            height: visible ? liveCol.implicitHeight + root.padV * 2 : 0
             Column {
               id: liveCol
-              x: 20; y: 12; width: parent.width - 40
+              x: root.padH; y: root.padV; width: parent.width - root.padH * 2
               spacing: 6
               Text { text: root.modelLabel(root.model); color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
               Text {
                 width: parent.width
                 text: root.streaming ? root.answer : root.spinnerFrames.charAt(root.spinIndex)
-                color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body
+                color: root.streaming ? Color.menu.text : Color.accent   // themed spinner glyph
+                font.family: Style.font.family; font.pixelSize: Style.font.body
                 wrapMode: Text.WordWrap
               }
             }
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
           }
 
-          // ---- input row (first prompt / follow-up) ----
+          // ---- input row (multi-line; only shown when not streaming) ----
           Item {
+            id: inputRow
             width: parent.width
-            height: 48
-            TextInput {
+            visible: !root.busy
+            height: visible ? input.implicitHeight + root.padV * 2 : 0
+            TextEdit {
               id: input
-              anchors.fill: parent
-              anchors.leftMargin: 20; anchors.rightMargin: 20
-              verticalAlignment: TextInput.AlignVCenter
+              x: root.padH; y: root.padV; width: parent.width - root.padH * 2
               color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body
-              clip: true
-              enabled: !root.busy
+              wrapMode: TextEdit.Wrap
+              selectByMouse: true
+              selectionColor: Util.alpha(Color.accent, 0.35)
+              cursorDelegate: Rectangle { width: 2; height: input.cursorRectangle.height; color: Color.accent }
               Text {
-                anchors.verticalCenter: parent.verticalCenter
                 visible: input.text.length === 0
                 text: root.history.length > 0 ? "Ask a follow-up…"
                       : (root.mode === "chat" ? "Ask anything…" : "How should I change this?")
                 color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.body
               }
-              Keys.onPressed: function (event) {
-                if (event.modifiers & Qt.ControlModifier) {
-                  if (event.key === Qt.Key_M) { root.togglePicker("model"); event.accepted = true; return }
-                  if (event.key === Qt.Key_E && root.modelReasoning(root.model)) { root.togglePicker("effort"); event.accepted = true; return }
-                  if (event.key === Qt.Key_Comma) { root.openSettings(); event.accepted = true; return }
-                }
-                if (root.pickerKind !== "") {   // picker open: arrows/enter/esc drive it, swallow the rest
-                  if (event.key === Qt.Key_Up) root.pickerMove(-1)
-                  else if (event.key === Qt.Key_Down) root.pickerMove(1)
-                  else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.pickerCommit()
-                  else if (event.key === Qt.Key_Escape) root.closePicker()
-                  event.accepted = true
-                  return
-                }
-                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { root.send(); event.accepted = true }
-                else if (event.key === Qt.Key_Escape) { root.close(); event.accepted = true }
-              }
+              Keys.onPressed: function (event) { root.onInputKey(event) }
             }
           }
 
-          // ---- action rows (after an answer) ----
+          // ---- action rows (after a successful answer) ----
           Column {
+            id: actionsCol
             width: parent.width
             visible: !root.busy && root.lastAnswer !== ""
 
@@ -632,17 +730,20 @@ Item {
               width: parent.width
               label: "Copy output"
               hint: root.copiedHint
+              focused: root.actionFocus === 0
               onTriggered: root.copyLast()
             }
             RecastAction {
               width: parent.width
               label: "Regenerate"
+              focused: root.actionFocus === 1
               onTriggered: root.regenerate()
             }
             RecastAction {
               width: parent.width
               visible: root.sourceAddr !== ""
               label: "Insert in " + (root.sourceApp !== "" ? root.sourceApp : "app")
+              focused: root.actionFocus === 2
               onTriggered: root.insertIntoSource()
             }
           }
@@ -669,24 +770,26 @@ Item {
     MouseArea { anchors.fill: parent; onClicked: tp.clicked() }
   }
 
-  // small clickable action row
+  // clickable / keyboard-focusable action row
   component RecastAction: Item {
     id: act
     property string label: ""
     property string hint: ""
+    property bool focused: false
     signal triggered()
-    height: visible ? 44 : 0
-    Rectangle { anchors.fill: parent; color: hover.hovered ? Color.menu.selectedBackground : "transparent" }
+    height: visible ? root.padV * 2 + Style.font.body : 0
+    readonly property bool hot: focused || hover.hovered
+    Rectangle { anchors.fill: parent; color: act.hot ? Color.menu.selectedBackground : "transparent" }
     Text {
       anchors.verticalCenter: parent.verticalCenter
-      anchors.left: parent.left; anchors.leftMargin: 20
+      anchors.left: parent.left; anchors.leftMargin: root.padH
       text: act.label
-      color: hover.hovered ? Color.menu.selectedText : Color.menu.text
+      color: act.hot ? Color.menu.selectedText : Color.menu.text
       font.family: Style.font.family; font.pixelSize: Style.font.body
     }
     Text {
       anchors.verticalCenter: parent.verticalCenter
-      anchors.right: parent.right; anchors.rightMargin: 20
+      anchors.right: parent.right; anchors.rightMargin: root.padH
       text: act.hint
       color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
     }
