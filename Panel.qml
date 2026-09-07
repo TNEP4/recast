@@ -264,10 +264,13 @@ Item {
     if (root.sourceAddr === "" || root.lastAnswer === "") return
     copyText(root.lastAnswer)
     var mods = root.isTerminal(root.sourceClass) ? "CTRL SHIFT" : "CTRL"
+    var w = "address:" + root.sourceAddr
     root.close()
+    // Omarchy's Hyprland uses Lua dispatchers (hl.dsp.*), not the stock focuswindow/sendshortcut.
     insertProc.command = ["bash", "-c",
-      "hyprctl dispatch focuswindow address:" + root.sourceAddr +
-      "; sleep 0.06; hyprctl dispatch sendshortcut " + mods + ",v,address:" + root.sourceAddr]
+      "hyprctl dispatch 'hl.dsp.focus({ window = \"" + w + "\" })'" +
+      "; sleep 0.08; " +
+      "hyprctl dispatch 'hl.dsp.send_shortcut({ mods = \"" + mods + "\", key = \"v\", window = \"" + w + "\" })'"]
     insertProc.running = true
   }
 
