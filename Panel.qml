@@ -60,6 +60,8 @@ Item {
   ]
   property string model: "moonshotai/kimi-k3"
   property string effort: "default"
+  property bool autoCopy: true
+  property string userSystemPrompt: ""   // empty = use the built-in transformPrompt
   readonly property string configPath: Quickshell.env("HOME") + "/.config/recast/config.json"
 
   property bool settingsOpen: false
@@ -181,7 +183,7 @@ Item {
     if (root.messages.length === 0) {
       if (root.selection !== "") {
         root.messages = [
-          { role: "system", content: root.transformPrompt },
+          { role: "system", content: root.userSystemPrompt !== "" ? root.userSystemPrompt : root.transformPrompt },
           { role: "user", content: "Instruction: " + instruction + "\n\nText:\n" + root.selection }
         ]
       } else {
@@ -247,17 +249,17 @@ Item {
       root.messages = root.messages.concat([{ role: "assistant", content: root.answer }])
       root.history = root.history.concat([{ role: "assistant", text: root.answer, isError: false }])
       root.lastAnswer = root.answer
-      copyText(root.answer)          // auto-copy the result
-      root.copiedHint = "copied to clipboard"
+      if (root.autoCopy) { copyText(root.answer); root.copiedHint = "copied to clipboard" }
       root.answer = ""
     } else {
       var msg = root.errorText !== "" ? root.errorText
         : ((exitCode && exitCode !== 0) ? "Request failed (curl exit " + exitCode + ")" : "No response from the model.")
-      // drop the failed user turn from the API history so a retry is clean
+      // drop the failed user turn from the API history and prefill the input so a retry is clean
       if (root.messages.length > 0 && root.messages[root.messages.length - 1].role === "user")
         root.messages = root.messages.slice(0, root.messages.length - 1)
       root.history = root.history.concat([{ role: "assistant", text: msg, isError: true }])
       root.errorText = ""
+      input.text = root.pendingUser
     }
     Qt.callLater(function () { input.forceActiveFocus(); scrollToBottom() })
   }
@@ -365,6 +367,7 @@ Item {
     if (ctrl && event.key === Qt.Key_M) { root.togglePicker("model"); event.accepted = true; return }
     if (ctrl && event.key === Qt.Key_E && root.modelReasoning(root.model)) { root.togglePicker("effort"); event.accepted = true; return }
     if (ctrl && event.key === Qt.Key_Comma) { root.openSettings(); event.accepted = true; return }
+    if (ctrl && shift && event.key === Qt.Key_C) { root.copyLast(); event.accepted = true; return }
 
     if (root.pickerKind !== "") {   // a dropdown is open: drive it, swallow the rest
       if (event.key === Qt.Key_Up) root.pickerMove(-1)
@@ -400,9 +403,27 @@ Item {
   }
   function setModel(id) { root.model = id; saveConfig() }
   function setEffort(id) { root.effort = id; saveConfig() }
-  function saveConfig() { cfgFile.setText(JSON.stringify({ model: root.model, effort: root.effort }, null, 2) + "\n") }
-  function openSettings() { root.settingsOpen = true; Qt.callLater(function () { keyField.forceActiveFocus() }) }
-  function closeSettings() { root.settingsOpen = false; keyField.text = ""; Qt.callLater(function () { input.forceActiveFocus() }) }
+  function saveConfig() {
+    cfgFile.setText(JSON.stringify({
+      model: root.model, effort: root.effort, autoCopy: root.autoCopy, systemPrompt: root.userSystemPrompt
+    }, null, 2) + "\n")
+  }
+  function openSettings() {
+    modelField.text = root.model
+    sysEdit.text = root.userSystemPrompt !== "" ? root.userSystemPrompt : root.transformPrompt
+    root.settingsOpen = true
+    Qt.callLater(function () { keyField.forceActiveFocus() })
+  }
+  function closeSettings() {
+    var m = modelField.text.replace(/^\s+|\s+$/g, "")
+    if (m !== "" && m !== root.model) root.model = m
+    root.userSystemPrompt = (sysEdit.text === root.transformPrompt) ? "" : sysEdit.text
+    saveConfig()
+    root.settingsOpen = false; keyField.text = ""
+    Qt.callLater(function () { input.forceActiveFocus() })
+  }
+  function toggleAutoCopy() { root.autoCopy = !root.autoCopy; saveConfig() }
+  function resetSystemPrompt() { sysEdit.text = root.transformPrompt }
 
   FileView {
     id: cfgFile
@@ -415,6 +436,8 @@ Item {
         var c = JSON.parse(text() || "{}")
         if (c.model) root.model = c.model
         if (c.effort) root.effort = c.effort
+        if (c.autoCopy !== undefined) root.autoCopy = !!c.autoCopy
+        if (c.systemPrompt !== undefined) root.userSystemPrompt = String(c.systemPrompt || "")
       } catch (e) {}
     }
   }
@@ -478,57 +501,135 @@ Item {
 
       MouseArea { anchors.fill: parent }   // swallow clicks so the scrim close doesn't fire
 
-      // settings overlay (Ctrl+,) — enter the OpenRouter API key
+      // settings overlay (Ctrl+,) — key, model, auto-copy, system prompt
       Rectangle {
         id: settingsView
         visible: root.settingsOpen
         z: 20
         anchors.top: parent.top; anchors.left: parent.left
         width: parent.width
-        implicitHeight: setCol.implicitHeight
+        implicitHeight: Math.min(setCol.implicitHeight, root.maxHeight)
         height: implicitHeight
         color: Color.menu.background
-        Column {
-          id: setCol
-          width: parent.width
-          Item {
-            width: parent.width; height: 40
-            Row {
-              anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 20; spacing: 12
-              Text { text: "Recast"; color: Color.menu.text; font.bold: true; font.family: Style.font.family; font.pixelSize: Style.font.title }
-              Text { text: "Settings"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.title }
-            }
-            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
-          }
-          Item {
+        Flickable {
+          anchors.fill: parent
+          contentHeight: setCol.implicitHeight
+          clip: true
+          Column {
+            id: setCol
             width: parent.width
-            height: keyCol.implicitHeight + 36
-            Column {
-              id: keyCol
-              x: 20; y: 18; width: parent.width - 40; spacing: 8
-              Text { text: "OpenRouter API key"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
-              Rectangle {
-                width: parent.width; height: 34; color: "transparent"
-                border.color: keyField.activeFocus ? Color.menu.selectedText : Util.alpha(Color.menu.border, 0.5)
-                border.width: 1
-                TextInput {
-                  id: keyField
-                  anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
-                  verticalAlignment: TextInput.AlignVCenter
-                  echoMode: TextInput.Password
-                  color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body; clip: true
-                  cursorDelegate: Rectangle { width: 2; height: keyField.cursorRectangle.height; color: Color.accent }
-                  Text { anchors.verticalCenter: parent.verticalCenter; visible: keyField.text.length === 0; text: "sk-or-…"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.body }
-                  Keys.onReturnPressed: { if (keyField.text.length > 0) root.storeKey(keyField.text); root.closeSettings() }
-                  Keys.onEnterPressed: { if (keyField.text.length > 0) root.storeKey(keyField.text); root.closeSettings() }
-                  Keys.onEscapePressed: root.closeSettings()
+
+            // title
+            Item {
+              width: parent.width; height: 40
+              Row {
+                anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: root.padH; spacing: 12
+                Text { text: "Recast"; color: Color.menu.text; font.bold: true; font.family: Style.font.family; font.pixelSize: Style.font.title }
+                Text { text: "Settings"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.title }
+              }
+              Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
+            }
+
+            // API key
+            Item {
+              width: parent.width; height: keyCol.implicitHeight + root.padV * 2
+              Column {
+                id: keyCol
+                x: root.padH; y: root.padV; width: parent.width - root.padH * 2; spacing: 8
+                Text { text: "OpenRouter API key"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+                Rectangle {
+                  width: parent.width; height: Style.font.body + 18; color: "transparent"
+                  border.color: keyField.activeFocus ? Color.menu.selectedText : Util.alpha(Color.menu.border, 0.5); border.width: 1
+                  TextInput {
+                    id: keyField
+                    anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
+                    verticalAlignment: TextInput.AlignVCenter; echoMode: TextInput.Password
+                    color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body; clip: true
+                    cursorDelegate: Rectangle { width: 2; height: keyField.cursorRectangle.height; color: Color.accent }
+                    Text { anchors.verticalCenter: parent.verticalCenter; visible: keyField.text.length === 0; text: "sk-or-…"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.body }
+                    Keys.onReturnPressed: { if (keyField.text.length > 0) root.storeKey(keyField.text); root.closeSettings() }
+                    Keys.onEnterPressed: { if (keyField.text.length > 0) root.storeKey(keyField.text); root.closeSettings() }
+                    Keys.onEscapePressed: root.closeSettings()
+                  }
+                }
+                Text { width: parent.width; text: (root.apiKey !== "" ? "A key is set. " : "") + "Stored in the system keyring, never on disk."; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap }
+              }
+              Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
+            }
+
+            // model id (any OpenRouter model; the top-bar picker sets this too)
+            Item {
+              width: parent.width; height: modelCol.implicitHeight + root.padV * 2
+              Column {
+                id: modelCol
+                x: root.padH; y: root.padV; width: parent.width - root.padH * 2; spacing: 8
+                Text { text: "Model id"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+                Rectangle {
+                  width: parent.width; height: Style.font.body + 18; color: "transparent"
+                  border.color: modelField.activeFocus ? Color.menu.selectedText : Util.alpha(Color.menu.border, 0.5); border.width: 1
+                  TextInput {
+                    id: modelField
+                    anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body; clip: true
+                    cursorDelegate: Rectangle { width: 2; height: modelField.cursorRectangle.height; color: Color.accent }
+                    Keys.onReturnPressed: root.closeSettings()
+                    Keys.onEnterPressed: root.closeSettings()
+                    Keys.onEscapePressed: root.closeSettings()
+                  }
                 }
               }
-              Text {
-                width: parent.width
-                text: (root.apiKey !== "" ? "A key is set. " : "") +
-                      "Stored in the system keyring, never written to disk. Enter to save · Esc to close."
-                color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
+              Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
+            }
+
+            // auto-copy toggle
+            Item {
+              width: parent.width; height: Style.font.body + root.padV * 2
+              Row {
+                x: root.padH; anchors.verticalCenter: parent.verticalCenter; spacing: 12
+                Rectangle {
+                  width: 16; height: 16; anchors.verticalCenter: parent.verticalCenter
+                  color: root.autoCopy ? Color.accent : "transparent"
+                  border.color: root.autoCopy ? Color.accent : Util.alpha(Color.menu.border, 0.6); border.width: 1
+                  Text { anchors.centerIn: parent; visible: root.autoCopy; text: "✓"; color: Color.menu.background; font.pixelSize: 11; font.family: Style.font.family }
+                }
+                Text { anchors.verticalCenter: parent.verticalCenter; text: "Copy the answer to the clipboard automatically"; color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.body }
+              }
+              MouseArea { anchors.fill: parent; onClicked: root.toggleAutoCopy() }
+              Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
+            }
+
+            // system prompt (transform mode) + reset
+            Item {
+              width: parent.width; height: sysCol.implicitHeight + root.padV * 2
+              Column {
+                id: sysCol
+                x: root.padH; y: root.padV; width: parent.width - root.padH * 2; spacing: 8
+                Item {
+                  width: parent.width; height: sysLbl.implicitHeight
+                  Text { id: sysLbl; anchors.left: parent.left; text: "System prompt (transform mode)"; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
+                  Text {
+                    anchors.right: parent.right; text: "Reset"; color: Color.accent; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
+                    MouseArea { anchors.fill: parent; onClicked: root.resetSystemPrompt() }
+                  }
+                }
+                Rectangle {
+                  width: parent.width; height: Math.min(160, Math.max(84, sysEdit.implicitHeight + 16)); color: "transparent"
+                  border.color: sysEdit.activeFocus ? Color.menu.selectedText : Util.alpha(Color.menu.border, 0.5); border.width: 1
+                  Flickable {
+                    anchors.fill: parent; anchors.margins: 8; clip: true; contentHeight: sysEdit.implicitHeight
+                    TextEdit {
+                      id: sysEdit
+                      width: parent.width
+                      color: Color.menu.text; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
+                      wrapMode: TextEdit.Wrap; selectByMouse: true
+                      selectionColor: Util.alpha(Color.accent, 0.35)
+                      cursorDelegate: Rectangle { width: 2; height: sysEdit.cursorRectangle.height; color: Color.accent }
+                      Keys.onEscapePressed: root.closeSettings()
+                    }
+                  }
+                }
+                Text { width: parent.width; text: "Esc to save & close."; color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.bodySmall }
               }
             }
           }
@@ -731,12 +832,14 @@ Item {
               label: "Copy output"
               hint: root.copiedHint
               focused: root.actionFocus === 0
+              divider: true
               onTriggered: root.copyLast()
             }
             RecastAction {
               width: parent.width
               label: "Regenerate"
               focused: root.actionFocus === 1
+              divider: root.sourceAddr !== ""
               onTriggered: root.regenerate()
             }
             RecastAction {
@@ -776,10 +879,12 @@ Item {
     property string label: ""
     property string hint: ""
     property bool focused: false
+    property bool divider: false
     signal triggered()
     height: visible ? root.padV * 2 + Style.font.body : 0
     readonly property bool hot: focused || hover.hovered
     Rectangle { anchors.fill: parent; color: act.hot ? Color.menu.selectedBackground : "transparent" }
+    Rectangle { visible: act.divider; anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Util.alpha(Color.menu.border, 0.4) }
     Text {
       anchors.verticalCenter: parent.verticalCenter
       anchors.left: parent.left; anchors.leftMargin: root.padH
