@@ -56,7 +56,14 @@ Set your OpenRouter API key: open Recast, press **Ctrl+,**, paste the key, Enter
 in the system keyring (never on disk). You can also export `OPENROUTER_API_KEY` instead.
 
 Dependencies (all in Omarchy's base): `curl`, `jq`, `wl-clipboard`, `libsecret` (`secret-tool`),
-plus `hyprctl` and the `omarchy-shell`.
+plus `hyprctl` and the `omarchy-shell`. Location context uses `omarchy-weather-location` if present.
+
+## Removing it
+
+1. Delete the Recast keybinding lines you appended to `~/.config/hypr/bindings.lua`, then `hyprctl reload`.
+2. `omarchy plugin remove io.github.tnep4.recast`
+3. Optional cleanup: `rm -rf ~/.config/recast` (settings) and
+   `secret-tool clear service openrouter app recast` (the stored API key).
 
 ## Using it
 
