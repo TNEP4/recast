@@ -10,7 +10,17 @@ Select text anywhere and press **SUPER+I** to transform it with an LLM (via
 to your clipboard. Follow up to refine, regenerate, or insert the result back into the app you
 came from. Or press **SUPER+SHIFT+I** to open it empty and just chat.
 
-![Recast](preview.png)
+## Screenshots
+
+**Quick chat** - press `SUPER+SHIFT+I`, ask anything; the model gets live context (the date, your location, the active app):
+
+![Ask Recast anything](images/quick-chat.png)
+![Recast's answer, with location-aware context](preview.png)
+
+**Transform selected text** - select text in any app, press `SUPER+I`, and give an instruction:
+
+![Selected text with an instruction](images/transform.png)
+![The transformed result](images/transform-result.png)
 
 ## What it's for
 
