@@ -779,11 +779,20 @@ Item {
             Row {
               anchors.verticalCenter: parent.verticalCenter
               anchors.left: parent.left; anchors.leftMargin: root.padH
-              spacing: 12
-              TopPicker { label: "Menu"; active: root.pickerKind === "menu"; onClicked: root.togglePicker("menu") }
-              Text { text: "Recast"; color: Color.menu.text; font.bold: true; font.family: Style.font.family; font.pixelSize: root.barFont }
-              Text { visible: root.mode === "transform" && root.sourceApp !== ""; text: "›"; color: Color.muted; font.family: Style.font.family; font.pixelSize: root.barFont }
-              Text { visible: root.mode === "transform" && root.sourceApp !== ""; text: root.sourceApp; color: Color.menu.text; font.family: Style.font.family; font.pixelSize: root.barFont }
+              spacing: 10
+              readonly property bool hasCrumb: root.mode === "transform" && root.sourceApp !== ""
+              // "Recast" is the menu trigger: hover-highlighted; the caret only shows when there's
+              // no "› app" breadcrumb (so it reads as a clickable group on its own).
+              Text {
+                id: recastBtn
+                text: "Recast" + (parent.hasCrumb ? "" : "  ⌄")
+                color: (root.pickerKind === "menu" || recastHover.hovered) ? Color.menu.selectedText : Color.menu.text
+                font.bold: true; font.family: Style.font.family; font.pixelSize: root.barFont
+                HoverHandler { id: recastHover }
+                MouseArea { anchors.fill: parent; onClicked: root.togglePicker("menu") }
+              }
+              Text { visible: parent.hasCrumb; text: "›"; color: Color.muted; font.family: Style.font.family; font.pixelSize: root.barFont }
+              Text { visible: parent.hasCrumb; text: root.sourceApp; color: Color.menu.text; font.family: Style.font.family; font.pixelSize: root.barFont }
             }
             Row {
               anchors.verticalCenter: parent.verticalCenter
