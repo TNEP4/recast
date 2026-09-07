@@ -61,14 +61,41 @@ process — not standalone apps. Key facts:
 Recast today is a **standalone GTK4/Python popup** launched by a keybinding — none of the
 plugin `kinds` is "a separate app." So "a proper plugin" is one of:
 
-### Path A — Native QML rewrite (the real plugin)
-- UI as an **`overlay`** (fullscreen surface summoned by a key) or **`panel`**, plus a
-  **`service`** singleton holding the OpenRouter streaming + state, exposed over IPC.
-- Pros: a first-class marketplace plugin; installs/removes cleanly via `omarchy plugin add`;
-  no external binary; matches the model reviewers expect.
-- Cons: full rewrite from Python/GTK to QML/JS (Quickshell). Re-implement streaming (SSE),
-  the model/effort pickers, multi-line editing, clipboard, keyring access (shell out to
-  `secret-tool` from QML `Process`), theming. Estimate ~2–4 focused days.
+### Path A — Native QML rewrite (the real plugin) — CHOSEN
+
+Concrete contract learned from `$OMARCHY_PATH/shell` (README + `plugins/menu`, `image-picker`,
+`agents`):
+
+- Recast is a **summoned surface**, kind **`panel`** ("a summoned floating window"), with
+  `keepLoaded: true` so it stays warm between summons. Entry point is a root **`Item`** (the
+  host owns the actual window), e.g. `Panel.qml`.
+- Lifecycle hooks the host calls: `open(payloadJson)`, `close()`, `refresh()`, `ping()`. Host
+  injects `shell`, `manifest`, and we read env via `Quickshell.env("HOME"/"OMARCHY_PATH")`.
+- **Summon replaces the keybinding-launches-a-process model.** The Hyprland bind runs
+  `omarchy-shell shell toggle io.github.tnep4.recast '<payloadJson>'`. The bind script grabs
+  the primary selection + active window first and passes them in the payload — so selection
+  and the "source app" breadcrumb still flow in, now via `open(payload)`. `--chat` becomes a
+  payload flag (`{"mode":"chat"}`).
+- **Reuse, don't rebuild the widgets:** `qs.Ui` ships `TextField`, `Dropdown`,
+  `SearchableDropdown`, `Panel`, `Button`, etc.; `qs.Commons` `Style`/`Color` give the theme
+  and fonts. Imports: `QtQuick`, `Quickshell`, `Quickshell.Io`, `Quickshell.Wayland`,
+  `qs.Commons`, `qs.Ui`.
+- **Streaming:** run `curl -N` to the OpenRouter SSE endpoint via `Quickshell.Io` `Process`,
+  parse `data:` lines from stdout (same protocol the Python app uses over urllib). No QML HTTP
+  client needed.
+- **Key storage:** read/write the keyring by shelling `secret-tool` via `Process` (service
+  `recast`), or read `OPENROUTER_API_KEY` from env. Never bundled, never written to the repo.
+- **Clipboard / insert:** `wl-copy`/`wl-paste` and `hyprctl dispatch` via `Process`, as today.
+- Validate before submit: `omarchy plugin validate <dir>` and
+  `/usr/lib/qt6/bin/qmllint -I $OMARCHY_PATH/shell <entry>.qml`. Dev loop: drop into
+  `~/.config/omarchy/plugins/<id>/`, `omarchy-shell shell rescanPlugins`, `omarchy plugin enable`.
+- Tooling confirmed present: `quickshell 0.3.1`, `omarchy plugin …` (incl. `validate`),
+  `qmllint`. `gh` is installed but **not logged in** (needs interactive `gh auth login` as TNEP4).
+
+Build order (incremental, each validated): (1) skeleton panel that summons/echoes payload →
+(2) input + streaming output via curl → (3) model/effort pickers + settings + keyring →
+(4) follow-ups, copy, regenerate, insert → (5) theming, breadcrumb, chat mode → (6) polish +
+`preview.png`, README, submit.
 
 ### Path B — Wrapper plugin (bridge)
 - A tiny **`service`** (+ optional `bar-widget` icon) whose QML shells out via Quickshell
